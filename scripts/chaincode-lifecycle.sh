@@ -7,7 +7,7 @@ CHANNEL_NAME="recchannel"
 CC_NAME="rec"
 CC_VERSION="1.0"
 CC_SEQUENCE="1"
-CC_SRC_PATH_IN_CONTAINER="/opt/gopath/src/github.com/chaincode/rec/javascript/"
+CC_SRC_PATH_IN_CONTAINER="/opt/gopath/src/github.com/chaincode/src/"
 
 # Function to get next version and sequence
 getNextVersion() {

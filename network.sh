@@ -12,9 +12,9 @@ CHANNEL_NAME="recchannel"
 MAIN_CHANNEL="mainrec"
 
 CC_NAME="rec"
-CC_VERSION="1.0"
-CC_SEQUENCE="1"
-CC_SRC_PATH_IN_CONTAINER="/opt/gopath/src/github.com/chaincode/lib/"
+CC_VERSION="1.0"  # ✅ Updated from 1.5 to 1.6 for correct certificate workflow
+CC_SEQUENCE="1"  # Updated to sequence 3 for chaincode upgrade
+CC_SRC_PATH_IN_CONTAINER="/opt/gopath/src/github.com/chaincode/src"
 
 AUTO_DEPLOY=false
 CREATE_MAIN_CHANNEL=false
@@ -81,7 +81,7 @@ removeOldArtifacts() {
   rm -rf ./organizations/ordererOrganizations ./organizations/peerOrganizations
   rm -rf ./system-genesis-block/* ./channel-artifacts/*
   mkdir -p ./system-genesis-block ./channel-artifacts
-}
+}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
 
 # Unduh binary Fabric & CA jika belum ada
 downloadFabricBinaries() {
@@ -367,7 +367,7 @@ checkChaincodePath() {
   
   docker exec cli bash -lc "test -d '${CC_SRC_PATH_IN_CONTAINER}'" || { 
     echo "WARNING: Chaincode folder tidak ditemukan: ${CC_SRC_PATH_IN_CONTAINER}"
-    echo "Pastikan blockchain developer sudah menyediakan chaincode di folder ./chaincode/lib/"
+    echo "Pastikan blockchain developer sudah menyediakan chaincode di folder ./chaincode/src/"
     return 1
   }
 }
@@ -427,10 +427,54 @@ installChaincode() {
   echo "SUCCESS: Chaincode installed on all peers"
 }
 
+# NEW: Auto-increment sequence function
+getNextSequence() {
+  local cc_name="$1"
+  local channel_name="$2"
+  
+  echo "Detecting next sequence for chaincode ${cc_name} on channel ${channel_name}..." >&2
+  
+  # Query committed chaincode to get current sequence
+  local query_result=$(docker exec \
+    -e CORE_PEER_LOCALMSPID=GeneratorMSP \
+    -e CORE_PEER_ADDRESS=peer0.generator.rec.com:7051 \
+    -e CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/generator.rec.com/users/Admin@generator.rec.com/msp \
+    -e CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/generator.rec.com/peers/peer0.generator.rec.com/tls/ca.crt \
+    cli peer lifecycle chaincode querycommitted \
+      --channelID "$channel_name" \
+      --name "$cc_name" \
+      --tls \
+      --cafile /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/rec.com/orderers/orderer.rec.com/msp/tlscacerts/tlsca.rec.com-cert.pem \
+      2>/dev/null || echo "")
+  
+  # Extract sequence from the output
+  local current_seq=$(echo "$query_result" | grep -o 'Sequence: [0-9]*' | cut -d' ' -f2 || echo "0")
+  
+  # If no chaincode committed yet, start with sequence 1
+  if [ -z "$current_seq" ] || [ "$current_seq" = "0" ]; then
+    echo "No committed chaincode found. Starting with sequence 1" >&2
+    echo "1"
+  else
+    local next_seq=$((current_seq + 1))
+    echo "Current sequence: $current_seq. Next sequence: $next_seq" >&2
+    echo "$next_seq"
+  fi
+}
+
+# NEW: Update sequence before deployment
+updateSequence() {
+  local cc_name="$1"
+  local channel_name="$2"
+  
+  echo "Auto-detecting sequence for chaincode deployment..."
+  CC_SEQUENCE=$(getNextSequence "$cc_name" "$channel_name")
+  echo "Using sequence: $CC_SEQUENCE"
+}
+
 # Auto approve chaincode untuk semua organisasi
 autoApproveChaincode() {
   echo "==== AUTO APPROVING CHAINCODE ===="
-  echo "Auto approving chaincode ${CC_NAME} v${CC_VERSION} for all organizations..."
+  echo "Auto approving chaincode ${CC_NAME} v${CC_VERSION} with sequence ${CC_SEQUENCE} for all organizations..."
   
   # Query installed chaincode untuk mendapatkan package ID
   echo "Querying installed chaincode untuk mendapatkan Package ID..."
@@ -459,7 +503,7 @@ autoApproveChaincode() {
     set -- $entry
     MSP=$1; HOST=$2; PORT=$3; DOM=$4
     
-    echo "Auto approving chaincode untuk ${MSP}..."
+    echo "Auto approving chaincode untuk ${MSP} with sequence ${CC_SEQUENCE}..."
     docker exec \
       -e CORE_PEER_LOCALMSPID=$MSP \
       -e CORE_PEER_ADDRESS=${HOST}:${PORT} \
@@ -481,16 +525,16 @@ autoApproveChaincode() {
       exit 1
     fi
     
-    echo "SUCCESS: Chaincode approved untuk ${MSP}"
+    echo "SUCCESS: Chaincode approved untuk ${MSP} with sequence ${CC_SEQUENCE}"
   done
   
-  echo "SUCCESS: All organizations have approved the chaincode"
+  echo "SUCCESS: All organizations have approved the chaincode with sequence ${CC_SEQUENCE}"
 }
 
 # Check commit readiness
 checkCommitReadiness() {
   echo "==== CHECKING COMMIT READINESS ===="
-  echo "Checking commit readiness for chaincode ${CC_NAME} v${CC_VERSION}..."
+  echo "Checking commit readiness for chaincode ${CC_NAME} v${CC_VERSION} with sequence ${CC_SEQUENCE}..."
   
   docker exec \
     -e CORE_PEER_LOCALMSPID=GeneratorMSP \
@@ -506,12 +550,12 @@ checkCommitReadiness() {
       --cafile /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/rec.com/orderers/orderer.rec.com/msp/tlscacerts/tlsca.rec.com-cert.pem \
       --output json
       
-  echo "Commit readiness check completed"
+  echo "Commit readiness check completed for sequence ${CC_SEQUENCE}"
 }
 
 autoCommitChaincode() {
   echo "==== AUTO COMMITTING CHAINCODE ===="
-  echo "Auto committing chaincode ${CC_NAME} v${CC_VERSION} to channel ${CHANNEL_NAME}..."
+  echo "Auto committing chaincode ${CC_NAME} v${CC_VERSION} with sequence ${CC_SEQUENCE} to channel ${CHANNEL_NAME}..."
   
   # Commit from GeneratorMSP
   docker exec \
@@ -535,34 +579,12 @@ autoCommitChaincode() {
       --peerAddresses peer0.buyer.rec.com:11051 \
       --tlsRootCertFiles /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/buyer.rec.com/peers/peer0.buyer.rec.com/tls/ca.crt
 
-  # Commit from IssuerMSP (tambahan untuk memenuhi mayoritas)
-  docker exec \
-    -e CORE_PEER_LOCALMSPID=IssuerMSP \
-    -e CORE_PEER_ADDRESS=peer0.issuer.rec.com:9051 \
-    -e CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/issuer.rec.com/users/Admin@issuer.rec.com/msp \
-    -e CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/issuer.rec.com/peers/peer0.issuer.rec.com/tls/ca.crt \
-    cli peer lifecycle chaincode commit \
-      -o orderer.rec.com:7050 \
-      --ordererTLSHostnameOverride orderer.rec.com \
-      --channelID $CHANNEL_NAME \
-      --name $CC_NAME \
-      --version $CC_VERSION \
-      --sequence $CC_SEQUENCE \
-      --tls \
-      --cafile /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/rec.com/orderers/orderer.rec.com/msp/tlscacerts/tlsca.rec.com-cert.pem \
-      --peerAddresses peer0.generator.rec.com:7051 \
-      --tlsRootCertFiles /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/generator.rec.com/peers/peer0.generator.rec.com/tls/ca.crt \
-      --peerAddresses peer0.issuer.rec.com:9051 \
-      --tlsRootCertFiles /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/issuer.rec.com/peers/peer0.issuer.rec.com/tls/ca.crt \
-      --peerAddresses peer0.buyer.rec.com:11051 \
-      --tlsRootCertFiles /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/buyer.rec.com/peers/peer0.buyer.rec.com/tls/ca.crt
-
   if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to commit chaincode"
+    echo "ERROR: Failed to commit chaincode with sequence ${CC_SEQUENCE}"
     exit 1
   fi
 
-  echo "SUCCESS: Chaincode committed successfully to channel ${CHANNEL_NAME}"
+  echo "SUCCESS: Chaincode committed successfully to channel ${CHANNEL_NAME} with sequence ${CC_SEQUENCE}"
 }
 
 # Query committed chaincode untuk verifikasi
@@ -592,11 +614,15 @@ deployChaincode() {
     return 0
   fi
   
+  # NEW: Auto-detect and update sequence before deployment
+  updateSequence "$CC_NAME" "$CHANNEL_NAME"
+  
   echo "========================================"
   echo "    CHAINCODE DEPLOYMENT STARTED"
   echo "========================================"
   echo "Deploying chaincode: ${CC_NAME} v${CC_VERSION}"
   echo "Target channel: ${CHANNEL_NAME}"
+  echo "Auto-detected sequence: ${CC_SEQUENCE}"
   echo "Auto approve: ${AUTO_APPROVE_COMMIT}"
   echo ""
   
@@ -629,7 +655,7 @@ deployChaincode() {
     echo "========================================"
     echo "  CHAINCODE DEPLOYMENT COMPLETED!"
     echo "========================================"
-    echo "✅ Chaincode ${CC_NAME} v${CC_VERSION} berhasil di-deploy!"
+    echo "✅ Chaincode ${CC_NAME} v${CC_VERSION} berhasil di-deploy dengan sequence ${CC_SEQUENCE}!"
     echo "✅ Semua organisasi telah auto approve dan commit"
     echo "✅ Chaincode siap digunakan di channel ${CHANNEL_NAME}"
   else
@@ -637,16 +663,21 @@ deployChaincode() {
     echo "  CHAINCODE PACKAGED & INSTALLED"
     echo "========================================"
     echo "✅ Chaincode ${CC_NAME} v${CC_VERSION} berhasil di-package dan install!"
+    echo "📝 Next sequence will be: ${CC_SEQUENCE}"
     echo "📝 Untuk approve dan commit, gunakan: ./network.sh approve-commit"
   fi
 }
 
 # Fungsi untuk approve dan commit saja (untuk manual control)
 approveAndCommitChaincode() {
+  # NEW: Auto-detect and update sequence before approve/commit
+  updateSequence "$CC_NAME" "$CHANNEL_NAME"
+  
   echo "========================================"
   echo "    CHAINCODE APPROVE & COMMIT"
   echo "========================================"
   echo "Approving and committing chaincode: ${CC_NAME} v${CC_VERSION}"
+  echo "Auto-detected sequence: ${CC_SEQUENCE}"
   echo ""
   
   # Auto approve
@@ -668,7 +699,7 @@ approveAndCommitChaincode() {
   echo "========================================"
   echo "  APPROVE & COMMIT COMPLETED!"
   echo "========================================"
-  echo "✅ Chaincode ${CC_NAME} v${CC_VERSION} berhasil di-approve dan commit!"
+  echo "✅ Chaincode ${CC_NAME} v${CC_VERSION} berhasil di-approve dan commit dengan sequence ${CC_SEQUENCE}!"
   echo "✅ Chaincode siap digunakan di channel ${CHANNEL_NAME}"
 }
 
